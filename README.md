@@ -12,10 +12,10 @@ ghcr.io/yaver-dev/caddy-cloudflare
 
 ### Tags
 
-| Tag | Meaning |
-|---|---|
+| Tag                 | Meaning                                             |
+| ------------------- | --------------------------------------------------- |
 | `2.10.2-cf0.2.1-r1` | Caddy 2.10.2 + cloudflare module v0.2.1, revision 1 |
-| `<git-sha>` | Immutable commit-SHA tag for pinning in production |
+| `<git-sha>`         | Source-revision convenience tag; use a digest for immutable production pinning |
 
 No `latest` tag is published. Pin to an exact version tag (or digest) in
 production.
@@ -79,7 +79,9 @@ The Cloudflare API token is a **runtime-only** concern. Supply it via:
 * Kubernetes `Secret`
 * Any other runtime secret mechanism
 
-The image itself contains **no** certificates, Caddy configuration, or
+Do not share `docker compose config` output: Compose can render resolved secret values into that output.
+
+This build does not add certificates, custom Caddy configuration, or
 Cloudflare credentials.
 
 ## Package visibility

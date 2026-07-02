@@ -3,115 +3,136 @@ name: Publish caddy-cloudflare
 on:
   push:
     tags:
-      - 'caddy-cloudflare-v*'
+      - "caddy-cloudflare-v*"
+
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Release tag, e.g. caddy-cloudflare-v2.10.2-cf0.2.1-r1"
+        required: true
+        type: string
 
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository_owner }}/caddy-cloudflare
+  CACHE_SCOPE: caddy-cloudflare-amd64
 
 permissions:
   contents: read
   packages: write
 
 jobs:
-  # ── Local test (linux/amd64) ──────────────────────────────────────────
   test:
+    name: Build and test (linux/amd64)
     runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
 
-      - name: Load versions
-        id: versions
+    steps:
+      - name: Check out release source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref }}
+          fetch-depth: 0
+
+      - name: Load versions and validate release tag
+        id: release
+        shell: bash
         run: |
+          set -euo pipefail
+
           set -a
           source versions.env
           set +a
+
+          cf_clean="${CADDY_DNS_CLOUDFLARE_VERSION#v}"
+          image_tag="${CADDY_VERSION}-cf${cf_clean}-${IMAGE_REVISION}"
+          expected_tag="caddy-cloudflare-v${image_tag}"
+
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            release_tag="${{ inputs.release_tag }}"
+          else
+            release_tag="${GITHUB_REF#refs/tags/}"
+          fi
+
+          git rev-parse -q --verify "refs/tags/${release_tag}" >/dev/null
+
+          if [ "$release_tag" != "$expected_tag" ]; then
+            echo "::error::Release tag '${release_tag}' does not match expected '${expected_tag}'"
+            exit 1
+          fi
+
           echo "caddy_version=${CADDY_VERSION}" >> "$GITHUB_OUTPUT"
           echo "cf_version=${CADDY_DNS_CLOUDFLARE_VERSION}" >> "$GITHUB_OUTPUT"
-          echo "revision=${IMAGE_REVISION}" >> "$GITHUB_OUTPUT"
-
-      - name: Compute image tag
-        id: tag
-        run: |
-          TAG="${{ steps.versions.outputs.caddy_version }}-cf${{ steps.versions.outputs.cf_version }}-${{ steps.versions.outputs.revision }}"
-          # Strip leading 'v' from Cloudflare module version if present
-          CF_CLEAN="$(echo "${{ steps.versions.outputs.cf_version }}" | sed 's/^v//')"
-          TAG="${{ steps.versions.outputs.caddy_version }}-cf${CF_CLEAN}-${{ steps.versions.outputs.revision }}"
-          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
-
-      - name: Validate tag matches Git tag
-        if: github.event_name == 'push'
-        run: |
-          GIT_TAG="${GITHUB_REF#refs/tags/}"
-          # Expect caddy-cloudflare-v<image-tag>
-          EXPECTED_PREFIX="caddy-cloudflare-v"
-          case "$GIT_TAG" in
-            ${EXPECTED_PREFIX}*)
-              VERSION_PART="${GIT_TAG#${EXPECTED_PREFIX}}"
-              COMPUTED="${{ steps.tag.outputs.tag }}"
-              if [ "$VERSION_PART" != "$COMPUTED" ]; then
-                echo "::error::Git tag version '${VERSION_PART}' does not match computed image tag '${COMPUTED}'"
-                exit 1
-              fi
-              ;;
-            *)
-              echo "::error::Git tag '${GIT_TAG}' does not match expected pattern 'caddy-cloudflare-v*'"
-              exit 1
-              ;;
-          esac
-          echo "Tag validation passed: ${VERSION_PART}"
+          echo "image_tag=${image_tag}" >> "$GITHUB_OUTPUT"
+          echo "source_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
-        with:
-          driver: docker
 
-      - name: Build and test (linux/amd64)
+      - name: Build local test image
         uses: docker/build-push-action@v6
         with:
           context: .
           platforms: linux/amd64
           load: true
+          tags: caddy-cloudflare:test
           build-args: |
-            CADDY_VERSION=${{ steps.versions.outputs.caddy_version }}
-            CADDY_DNS_CLOUDFLARE_VERSION=${{ steps.versions.outputs.cf_version }}
-          tags: |
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:test
+            CADDY_VERSION=${{ steps.release.outputs.caddy_version }}
+            CADDY_DNS_CLOUDFLARE_VERSION=${{ steps.release.outputs.cf_version }}
+          cache-from: type=gha,scope=${{ env.CACHE_SCOPE }}
+          cache-to: type=gha,mode=max,scope=${{ env.CACHE_SCOPE }}
 
       - name: Assert Cloudflare DNS module
+        shell: bash
         run: |
-          docker run --rm ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:test \
-            caddy list-modules | grep -qF dns.providers.cloudflare \
-            && echo "Module assertion passed" \
-            || { echo "::error::Module dns.providers.cloudflare not found"; exit 1; }
+          set -euo pipefail
 
-  # ── Publish multi-arch ────────────────────────────────────────────────
+          docker run --rm caddy-cloudflare:test \
+            caddy list-modules |
+            grep -qFx dns.providers.cloudflare
+
   publish:
+    name: Publish (linux/amd64)
     needs: test
     runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
 
-      - name: Load versions
-        id: versions
+    steps:
+      - name: Check out release source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref }}
+          fetch-depth: 0
+
+      - name: Load versions and validate release tag
+        id: release
+        shell: bash
         run: |
+          set -euo pipefail
+
           set -a
           source versions.env
           set +a
+
+          cf_clean="${CADDY_DNS_CLOUDFLARE_VERSION#v}"
+          image_tag="${CADDY_VERSION}-cf${cf_clean}-${IMAGE_REVISION}"
+          expected_tag="caddy-cloudflare-v${image_tag}"
+
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            release_tag="${{ inputs.release_tag }}"
+          else
+            release_tag="${GITHUB_REF#refs/tags/}"
+          fi
+
+          git rev-parse -q --verify "refs/tags/${release_tag}" >/dev/null
+
+          if [ "$release_tag" != "$expected_tag" ]; then
+            echo "::error::Release tag '${release_tag}' does not match expected '${expected_tag}'"
+            exit 1
+          fi
+
           echo "caddy_version=${CADDY_VERSION}" >> "$GITHUB_OUTPUT"
           echo "cf_version=${CADDY_DNS_CLOUDFLARE_VERSION}" >> "$GITHUB_OUTPUT"
-          echo "revision=${IMAGE_REVISION}" >> "$GITHUB_OUTPUT"
-
-      - name: Compute image tag
-        id: tag
-        run: |
-          CF_CLEAN="$(echo "${{ steps.versions.outputs.cf_version }}" | sed 's/^v//')"
-          TAG="${{ steps.versions.outputs.caddy_version }}-cf${CF_CLEAN}-${{ steps.versions.outputs.revision }}"
-          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
+          echo "image_tag=${image_tag}" >> "$GITHUB_OUTPUT"
+          echo "source_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -123,23 +144,18 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract metadata
-        id: meta
-        run: |
-          echo "version_tag=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.tag.outputs.tag }}" >> "$GITHUB_OUTPUT"
-          echo "sha_tag=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}" >> "$GITHUB_OUTPUT"
-
       - name: Build and push
         uses: docker/build-push-action@v6
         with:
           context: .
-          platforms: linux/amd64,linux/arm64
+          platforms: linux/amd64
           push: true
+          provenance: mode=max
           build-args: |
-            CADDY_VERSION=${{ steps.versions.outputs.caddy_version }}
-            CADDY_DNS_CLOUDFLARE_VERSION=${{ steps.versions.outputs.cf_version }}
+            CADDY_VERSION=${{ steps.release.outputs.caddy_version }}
+            CADDY_DNS_CLOUDFLARE_VERSION=${{ steps.release.outputs.cf_version }}
           tags: |
-            ${{ steps.meta.outputs.version_tag }}
-            ${{ steps.meta.outputs.sha_tag }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.release.outputs.image_tag }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.release.outputs.source_sha }}
+          cache-from: type=gha,scope=${{ env.CACHE_SCOPE }}
+          cache-to: type=gha,mode=max,scope=${{ env.CACHE_SCOPE }}
