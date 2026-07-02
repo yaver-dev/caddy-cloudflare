@@ -1,0 +1,145 @@
+name: Publish caddy-cloudflare
+
+on:
+  push:
+    tags:
+      - 'caddy-cloudflare-v*'
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository_owner }}/caddy-cloudflare
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  # ── Local test (linux/amd64) ──────────────────────────────────────────
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Load versions
+        id: versions
+        run: |
+          set -a
+          source versions.env
+          set +a
+          echo "caddy_version=${CADDY_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "cf_version=${CADDY_DNS_CLOUDFLARE_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "revision=${IMAGE_REVISION}" >> "$GITHUB_OUTPUT"
+
+      - name: Compute image tag
+        id: tag
+        run: |
+          TAG="${{ steps.versions.outputs.caddy_version }}-cf${{ steps.versions.outputs.cf_version }}-${{ steps.versions.outputs.revision }}"
+          # Strip leading 'v' from Cloudflare module version if present
+          CF_CLEAN="$(echo "${{ steps.versions.outputs.cf_version }}" | sed 's/^v//')"
+          TAG="${{ steps.versions.outputs.caddy_version }}-cf${CF_CLEAN}-${{ steps.versions.outputs.revision }}"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+
+      - name: Validate tag matches Git tag
+        if: github.event_name == 'push'
+        run: |
+          GIT_TAG="${GITHUB_REF#refs/tags/}"
+          # Expect caddy-cloudflare-v<image-tag>
+          EXPECTED_PREFIX="caddy-cloudflare-v"
+          case "$GIT_TAG" in
+            ${EXPECTED_PREFIX}*)
+              VERSION_PART="${GIT_TAG#${EXPECTED_PREFIX}}"
+              COMPUTED="${{ steps.tag.outputs.tag }}"
+              if [ "$VERSION_PART" != "$COMPUTED" ]; then
+                echo "::error::Git tag version '${VERSION_PART}' does not match computed image tag '${COMPUTED}'"
+                exit 1
+              fi
+              ;;
+            *)
+              echo "::error::Git tag '${GIT_TAG}' does not match expected pattern 'caddy-cloudflare-v*'"
+              exit 1
+              ;;
+          esac
+          echo "Tag validation passed: ${VERSION_PART}"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        with:
+          driver: docker
+
+      - name: Build and test (linux/amd64)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          load: true
+          build-args: |
+            CADDY_VERSION=${{ steps.versions.outputs.caddy_version }}
+            CADDY_DNS_CLOUDFLARE_VERSION=${{ steps.versions.outputs.cf_version }}
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:test
+
+      - name: Assert Cloudflare DNS module
+        run: |
+          docker run --rm ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:test \
+            caddy list-modules | grep -qF dns.providers.cloudflare \
+            && echo "Module assertion passed" \
+            || { echo "::error::Module dns.providers.cloudflare not found"; exit 1; }
+
+  # ── Publish multi-arch ────────────────────────────────────────────────
+  publish:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Load versions
+        id: versions
+        run: |
+          set -a
+          source versions.env
+          set +a
+          echo "caddy_version=${CADDY_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "cf_version=${CADDY_DNS_CLOUDFLARE_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "revision=${IMAGE_REVISION}" >> "$GITHUB_OUTPUT"
+
+      - name: Compute image tag
+        id: tag
+        run: |
+          CF_CLEAN="$(echo "${{ steps.versions.outputs.cf_version }}" | sed 's/^v//')"
+          TAG="${{ steps.versions.outputs.caddy_version }}-cf${CF_CLEAN}-${{ steps.versions.outputs.revision }}"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        run: |
+          echo "version_tag=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.tag.outputs.tag }}" >> "$GITHUB_OUTPUT"
+          echo "sha_tag=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          build-args: |
+            CADDY_VERSION=${{ steps.versions.outputs.caddy_version }}
+            CADDY_DNS_CLOUDFLARE_VERSION=${{ steps.versions.outputs.cf_version }}
+          tags: |
+            ${{ steps.meta.outputs.version_tag }}
+            ${{ steps.meta.outputs.sha_tag }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
