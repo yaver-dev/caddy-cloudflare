@@ -14,7 +14,7 @@ ghcr.io/yaver-dev/caddy-cloudflare
 
 | Tag                 | Meaning                                             |
 | ------------------- | --------------------------------------------------- |
-| `2.10.2-cf0.2.1-r1` | Caddy 2.10.2 + cloudflare module v0.2.1, revision 1 |
+| `2.10.2-cf0.2.4-r3` | Caddy 2.10.2 + cloudflare module v0.2.4, revision 3 |
 | `<git-sha>`         | Source-revision convenience tag; use a digest for immutable production pinning |
 
 No `latest` tag is published. Pin to an exact version tag (or digest) in
@@ -27,7 +27,7 @@ production.
 ```yaml
 services:
   caddy:
-    image: ghcr.io/yaver-dev/caddy-cloudflare:2.10.2-cf0.2.1-r1
+    image: ghcr.io/yaver-dev/caddy-cloudflare:2.10.2-cf0.2.4-r3
     # No build section — pull the prebuilt image.
     ports:
       - "80:80"
@@ -51,7 +51,7 @@ spec:
     spec:
       containers:
         - name: caddy
-          image: ghcr.io/yaver-dev/caddy-cloudflare:2.10.2-cf0.2.1-r1
+          image: ghcr.io/yaver-dev/caddy-cloudflare:2.10.2-cf0.2.4-r3
           ports:
             - containerPort: 80
             - containerPort: 443
@@ -68,7 +68,7 @@ spec:
 After the first publish, pin by digest:
 
 ```yaml
-image: ghcr.io/yaver-dev/caddy-cloudflare:2.10.2-cf0.2.1-r1@sha256:...
+image: ghcr.io/yaver-dev/caddy-cloudflare:2.10.2-cf0.2.4-r3@sha256:...
 ```
 
 ## Runtime secrets
